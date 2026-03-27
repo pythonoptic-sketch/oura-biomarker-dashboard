@@ -5,7 +5,7 @@ This dashboard is packaged for a stable web deployment via Render.
 ## Why this path
 
 - stable public URL instead of a rotating `trycloudflare.com` tunnel
-- persistent disk for accounts, event logs, invite state, device sessions, and OAuth state
+- free web-service deploy for initial testing
 - Docker-based deploy matches the current local app with minimal changes
 
 ## Files
@@ -30,7 +30,7 @@ This dashboard is packaged for a stable web deployment via Render.
 
 ## Persistence
 
-The service expects a mounted disk at `/data` and stores:
+The service stores local state under `/data`:
 
 - `accounts.json`
 - `oauth_states.json`
@@ -38,7 +38,11 @@ The service expects a mounted disk at `/data` and stores:
 - `events.csv`
 - `workout_intents.csv`
 
-Without a persistent disk, users, invites, saved sessions, and logs will reset on restart.
+On Render's free plan this storage is ephemeral. Users, invites, saved sessions, and logs can reset on restart or redeploy.
+
+For free initial testing this is acceptable.
+
+For durable multi-user use, move these stores into a real database or switch to a paid persistent disk.
 
 ## Oura OAuth requirement
 

@@ -4,12 +4,8 @@ services:
     runtime: docker
     dockerfilePath: ./tools/oura_streamlit_dashboard.Dockerfile
     healthCheckPath: /_stcore/health
-    plan: starter
+    plan: free
     autoDeploy: false
-    disk:
-      name: oura-dashboard-data
-      mountPath: /data
-      sizeGB: 1
     envVars:
       - key: OURA_ACCOUNT_STORE_PATH
         value: /data/accounts.json
