@@ -7,6 +7,7 @@ This dashboard is packaged for a stable web deployment via Render.
 - stable public URL instead of a rotating `trycloudflare.com` tunnel
 - free web-service deploy for initial testing
 - Docker-based deploy matches the current local app with minimal changes
+- Python 3.12 base image to stay on the stable wheel path for pandas/Streamlit dependencies
 
 ## Files
 
