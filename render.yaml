@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: oura-biomarker-dashboard
+    runtime: docker
+    dockerfilePath: ./tools/oura_streamlit_dashboard.Dockerfile
+    healthCheckPath: /_stcore/health
+    plan: starter
+    autoDeploy: false
+    disk:
+      name: oura-dashboard-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: OURA_ACCOUNT_STORE_PATH
+        value: /data/accounts.json
+      - key: OURA_OAUTH_STATE_STORE_PATH
+        value: /data/oauth_states.json
+      - key: OURA_DEVICE_SESSION_STORE_PATH
+        value: /data/device_sessions.json
+      - key: OURA_BEHAVIOR_EVENT_PATH
+        value: /data/events.csv
+      - key: OURA_WORKOUT_INTENT_PATH
+        value: /data/workout_intents.csv
+      - key: OURA_PUBLIC_INVITE_ONLY
+        value: "1"
+      - key: OURA_ENABLE_BROWSER_OAUTH
+        value: "1"
+      - key: OURA_BOOTSTRAP_CODE
+        sync: false
+      - key: OURA_CLIENT_ID
+        sync: false
+      - key: OURA_CLIENT_SECRET
+        sync: false
+      - key: OURA_OAUTH_REDIRECT_URI
+        sync: false
