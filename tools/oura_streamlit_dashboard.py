@@ -646,6 +646,46 @@ def clear_oura_oauth_query_params() -> None:
             del st.query_params[key]
 
 
+def prepare_oura_oauth_link(*, action: str, payload: Dict[str, Any]) -> str:
+    normalized_action = str(action or "").strip()
+    normalized_payload = payload if isinstance(payload, dict) else {}
+    payload_key = hashlib.sha1(
+        json.dumps(
+            {"action": normalized_action, "payload": normalized_payload},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    cached = st.session_state.get("prepared_oura_oauth")
+    if isinstance(cached, dict):
+        cached_pending = cached.get("pending")
+        cached_url = str(cached.get("url") or "").strip()
+        if (
+            str(cached.get("key") or "") == payload_key
+            and isinstance(cached_pending, dict)
+            and cached_url
+            and not _oauth_state_is_expired(cached_pending)
+        ):
+            st.session_state["pending_oura_oauth"] = cached_pending
+            return cached_url
+
+    nonce = secrets.token_urlsafe(24)
+    pending = persist_pending_oura_oauth(
+        nonce=nonce,
+        action=normalized_action,
+        payload=normalized_payload,
+    )
+    authorize_url = build_oura_authorize_url(state=nonce)
+    st.session_state["prepared_oura_oauth"] = {
+        "key": payload_key,
+        "pending": pending,
+        "url": authorize_url,
+    }
+    st.session_state["pending_oura_oauth"] = pending
+    return authorize_url
+
+
 def redirect_browser(url: str) -> None:
     target_url = str(url or "").strip()
     components.html(
@@ -665,19 +705,11 @@ def redirect_browser(url: str) -> None:
         """,
         height=0,
     )
-    st.info("Redirecting to Oura in the browser…")
-    st.link_button("Continue to Oura", target_url)
     st.stop()
 
 
 def begin_oura_oauth_flow(*, action: str, payload: Dict[str, Any]) -> None:
-    nonce = secrets.token_urlsafe(24)
-    st.session_state["pending_oura_oauth"] = persist_pending_oura_oauth(
-        nonce=nonce,
-        action=str(action or "").strip(),
-        payload=payload,
-    )
-    redirect_browser(build_oura_authorize_url(state=nonce))
+    redirect_browser(prepare_oura_oauth_link(action=action, payload=payload))
 
 
 def handle_oura_oauth_callback(path: str) -> None:
@@ -700,17 +732,20 @@ def handle_oura_oauth_callback(path: str) -> None:
 
     if not isinstance(pending, dict):
         st.session_state["oauth_flash_error"] = "Oura returned to the app, but there was no matching pending sign-in flow."
+        st.session_state.pop("prepared_oura_oauth", None)
         clear_oura_oauth_query_params()
         return
 
     if state and str(pending.get("nonce") or "") != state:
         st.session_state["oauth_flash_error"] = "Oura sign-in state check failed. Please try again."
         st.session_state.pop("pending_oura_oauth", None)
+        st.session_state.pop("prepared_oura_oauth", None)
         clear_oura_oauth_query_params()
         return
 
     if error:
         st.session_state["oauth_flash_error"] = "Oura access was not granted."
+        st.session_state.pop("prepared_oura_oauth", None)
         clear_oura_oauth_query_params()
         return
 
@@ -776,6 +811,7 @@ def handle_oura_oauth_callback(path: str) -> None:
         st.session_state["oauth_flash_error"] = str(exc)
     finally:
         st.session_state.pop("pending_oura_oauth", None)
+        st.session_state.pop("prepared_oura_oauth", None)
         clear_oura_oauth_query_params()
 
 
@@ -7006,10 +7042,10 @@ def main() -> None:
 
     refresh_value = _safe_float(st.session_state.get("auto_refresh_minutes"))
     if refresh_value is None:
-        refresh_value = 6.0 if current_member_id else 0.0
+        refresh_value = 6.0
     refresh_minutes = int(refresh_value)
     if refresh_minutes not in {0, 3, 6}:
-        refresh_minutes = 6 if current_member_id else 0
+        refresh_minutes = 6
     st.session_state["auto_refresh_minutes"] = refresh_minutes
     maybe_enable_auto_refresh(refresh_minutes)
 
@@ -7316,20 +7352,6 @@ def main() -> None:
         if show_title:
             st.header("Oura access")
 
-        refresh_options = {"Off": 0, "Every 3 min": 3, "Every 6 min": 6}
-        current_refresh = int(_safe_float(st.session_state.get("auto_refresh_minutes")) or 0)
-        if current_refresh not in refresh_options.values():
-            current_refresh = 0
-        refresh_labels = list(refresh_options.keys())
-        selected_refresh = next((label for label, value in refresh_options.items() if value == current_refresh), "Off")
-        refresh_label = st.selectbox(
-            "Auto-refresh",
-            options=refresh_labels,
-            index=refresh_labels.index(selected_refresh),
-            key=f"{key_prefix}_auto_refresh_personal",
-        )
-        st.session_state["auto_refresh_minutes"] = refresh_options[refresh_label]
-
         personal_accounts = personal_saved_accounts()
         personal_account_options = {
             str(account.get("id") or ""): str(account.get("label") or account.get("profile_name") or "You")
@@ -7373,14 +7395,14 @@ def main() -> None:
             personal_label = st.text_input("Your name", value=personal_label_default, key=f"{key_prefix}_personal_label")
             if oauth_browser_enabled:
                 st.caption("Authorize Oura in the browser to load the full personal dashboard.")
-                if st.button("Connect Oura", key=f"{key_prefix}_personal_oauth_button"):
-                    begin_oura_oauth_flow(
-                        action="connect_personal",
-                        payload={
-                            "label": personal_label,
-                            "account_id": str((current_personal_account or {}).get("id") or ""),
-                        },
-                    )
+                personal_oauth_url = prepare_oura_oauth_link(
+                    action="connect_personal",
+                    payload={
+                        "label": personal_label,
+                        "account_id": str((current_personal_account or {}).get("id") or ""),
+                    },
+                )
+                st.link_button("Connect Oura", personal_oauth_url, use_container_width=True)
             else:
                 missing_items = [str(item) for item in oauth_config.get("missing", []) if str(item).strip()]
                 if missing_items:
@@ -7434,6 +7456,21 @@ def main() -> None:
                     "last_refreshed_at": "",
                 }
 
+    def render_auto_refresh_control(*, key_prefix: str) -> None:
+        refresh_options = {"Off": 0, "Every 3 min": 3, "Every 6 min": 6}
+        current_refresh = int(_safe_float(st.session_state.get("auto_refresh_minutes")) or 6)
+        if current_refresh not in refresh_options.values():
+            current_refresh = 6
+        refresh_labels = list(refresh_options.keys())
+        selected_refresh = next((label for label, value in refresh_options.items() if value == current_refresh), "Every 6 min")
+        refresh_label = st.selectbox(
+            "Auto-refresh",
+            options=refresh_labels,
+            index=refresh_labels.index(selected_refresh),
+            key=f"{key_prefix}_auto_refresh",
+        )
+        st.session_state["auto_refresh_minutes"] = refresh_options[refresh_label]
+
     def render_mobile_view_controls() -> None:
         account_options: List[Dict[str, Any]] = []
         if session_account is not None:
@@ -7459,6 +7496,7 @@ def main() -> None:
             st.session_state["active_account_id"] = active_mobile
         st.session_state["compare_account_ids"] = []
 
+        render_auto_refresh_control(key_prefix="mobile")
         goal_options = [
             "Performance (endurance)",
             "Performance (strength / hybrid)",
@@ -7561,6 +7599,9 @@ def main() -> None:
             st.stop()
 
         st.caption(f"Account store: `{pathlib.Path(ACCOUNT_STORE_PATH).expanduser()}`")
+        st.divider()
+        st.header("Settings")
+        render_auto_refresh_control(key_prefix="sidebar")
         st.divider()
         st.header("Goal")
         goal = st.selectbox(
