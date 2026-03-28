@@ -409,7 +409,11 @@ def current_app_url() -> str:
 def oura_oauth_config() -> Dict[str, Any]:
     client_id = str(os.environ.get("OURA_CLIENT_ID") or "").strip()
     client_secret = str(os.environ.get("OURA_CLIENT_SECRET") or "").strip()
-    redirect_uri = str(os.environ.get("OURA_OAUTH_REDIRECT_URI") or "").strip()
+    configured_redirect_uri = str(os.environ.get("OURA_OAUTH_REDIRECT_URI") or "").strip()
+    include_redirect_uri = str(os.environ.get("OURA_INCLUDE_REDIRECT_URI") or "").strip().lower() in {"1", "true", "yes"}
+    # Oura accepts requests without redirect_uri when the app has a single
+    # registered callback, which is safer than sending a stale host secret.
+    redirect_uri = configured_redirect_uri if include_redirect_uri else ""
     scopes = str(os.environ.get("OURA_OAUTH_SCOPES") or DEFAULT_OAUTH_SCOPES).strip() or DEFAULT_OAUTH_SCOPES
     missing: List[str] = []
     if not client_id:
@@ -420,6 +424,8 @@ def oura_oauth_config() -> Dict[str, Any]:
         "client_id": client_id,
         "client_secret": client_secret,
         "redirect_uri": redirect_uri,
+        "configured_redirect_uri": configured_redirect_uri,
+        "using_explicit_redirect_uri": bool(redirect_uri),
         "scopes": scopes,
         "enabled": not missing,
         "missing": missing,
