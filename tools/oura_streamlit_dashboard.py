@@ -428,13 +428,7 @@ def oura_oauth_config() -> Dict[str, Any]:
 
 
 def browser_oura_oauth_enabled() -> bool:
-    config = oura_oauth_config()
-    if not bool(config.get("enabled")):
-        return False
-    configured_flag = os.environ.get("OURA_ENABLE_BROWSER_OAUTH")
-    if configured_flag is None or not str(configured_flag).strip():
-        return True
-    return _coerce_bool(configured_flag)
+    return bool(oura_oauth_config().get("enabled"))
 
 
 def _normalize_device_session_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
