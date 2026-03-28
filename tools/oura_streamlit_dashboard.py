@@ -1024,7 +1024,7 @@ def save_account_store(
 def _parse_token_bundle_input(raw: str) -> Dict[str, Any]:
     raw = str(raw or "").strip()
     if not raw:
-        raise ValueError("Paste an access token or an oura_tokens.json payload.")
+        raise ValueError("Missing Oura access token.")
     if raw.startswith("{"):
         payload = json.loads(raw)
         if not isinstance(payload, dict):
@@ -7046,6 +7046,20 @@ def main() -> None:
     saved_communities = load_communities(ACCOUNT_STORE_PATH)
     session_token = os.environ.get("OURA_ACCESS_TOKEN", "").strip()
     session_account: Optional[Dict[str, Any]] = None
+    if session_token:
+        session_account = {
+            "id": "__session__",
+            "label": "Current session",
+            "profile_name": "Current session",
+            "email": "",
+            "profile": {},
+            "token_bundle": {"access_token": session_token, "_fetched_at": _utcnow().isoformat()},
+            "community_id": "",
+            "share_enabled": False,
+            "created_at": "",
+            "updated_at": "",
+            "last_refreshed_at": "",
+        }
     active_account_id: Optional[str] = None
     compare_account_ids: List[str] = []
     current_device_session_token = str(st.session_state.get("device_session_token") or "").strip()
@@ -7164,36 +7178,7 @@ def main() -> None:
                             },
                         )
                 else:
-                    st.caption("Browser Oura connect is disabled on this web host. Paste your token manually below.")
-                with st.expander("Advanced: paste token manually", expanded=True):
-                    reconnect_file = st.file_uploader(
-                        "Upload oura_tokens.json",
-                        type=["json"],
-                        key=f"{key_prefix}_community_reconnect_file",
-                    )
-                    reconnect_input = st.text_area(
-                        "Or paste token JSON / access token",
-                        height=120,
-                        key=f"{key_prefix}_community_reconnect_token_input",
-                    )
-                    if st.button("Save my Oura connection", key=f"{key_prefix}_community_reconnect_account"):
-                        raw_token_input = reconnect_input
-                        if reconnect_file is not None:
-                            raw_token_input = reconnect_file.getvalue().decode("utf-8")
-                        try:
-                            saved = upsert_connected_account(
-                                ACCOUNT_STORE_PATH,
-                                label=reconnect_label,
-                                token_input=raw_token_input,
-                                account_id=str((local_member_account or {}).get("id") or ""),
-                                community_id=str(local_community.get("id") or ""),
-                                share_enabled=reconnect_share_enabled,
-                            )
-                            st.session_state["community_member_id"] = str(saved["id"])
-                            st.session_state["active_account_id"] = str(saved["id"])
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(str(exc))
+                    st.warning("Browser Oura connect is disabled on this web host.")
         else:
             personal_accounts = [
                 account
@@ -7236,9 +7221,27 @@ def main() -> None:
                     st.divider()
 
                 personal_label_default = str((current_personal_account or {}).get("label") or "")
-                personal_label = st.text_input("Your name", value=personal_label_default, key=f"{key_prefix}_personal_label")
+                auto_connect_key = f"{key_prefix}_auto_connect_personal_oauth"
+
+                def _queue_personal_oauth_auto_connect() -> None:
+                    st.session_state[auto_connect_key] = True
+
+                personal_label = st.text_input(
+                    "Your name",
+                    value=personal_label_default,
+                    key=f"{key_prefix}_personal_label",
+                    on_change=_queue_personal_oauth_auto_connect if oauth_browser_enabled and current_personal_account is None else None,
+                )
                 if oauth_browser_enabled:
-                    st.caption("Use browser connect first. The token uploader below is only an advanced fallback.")
+                    if current_personal_account is None and st.session_state.pop(auto_connect_key, False):
+                        begin_oura_oauth_flow(
+                            action="connect_personal",
+                            payload={
+                                "label": personal_label,
+                                "account_id": str((current_personal_account or {}).get("id") or ""),
+                            },
+                        )
+                    st.caption("Press Enter after your name to open Oura consent in the browser.")
                     if st.button("Connect Oura and open personal dashboard", key=f"{key_prefix}_personal_oauth_button"):
                         begin_oura_oauth_flow(
                             action="connect_personal",
@@ -7250,36 +7253,9 @@ def main() -> None:
                 else:
                     missing_items = [str(item) for item in oauth_config.get("missing", []) if str(item).strip()]
                     if missing_items:
-                        st.caption(
-                            "Browser Oura connect is not configured on this host yet. "
-                            f"Missing: {', '.join(missing_items)}. Use the manual token fallback below."
-                        )
+                        st.warning(f"Browser Oura connect is not configured on this host yet. Missing: {', '.join(missing_items)}.")
                     else:
-                        st.caption("Browser Oura connect is disabled on this host. Use the manual token fallback below.")
-                with st.expander("Advanced fallback: add or update Oura token", expanded=current_personal_account is None and not oauth_browser_enabled):
-                    personal_file = st.file_uploader("Upload oura_tokens.json", type=["json"], key=f"{key_prefix}_personal_file")
-                    personal_token_input = st.text_area("Or paste token JSON / access token", height=120, key=f"{key_prefix}_personal_token_input")
-                    if st.button("Save personal dashboard access", key=f"{key_prefix}_save_personal_dashboard"):
-                        raw_token_input = personal_token_input
-                        if personal_file is not None:
-                            raw_token_input = personal_file.getvalue().decode("utf-8")
-                        try:
-                            saved = upsert_connected_account(
-                                ACCOUNT_STORE_PATH,
-                                label=personal_label,
-                                token_input=raw_token_input,
-                                account_id=str((current_personal_account or {}).get("id") or "") or None,
-                                community_id=None,
-                                share_enabled=False,
-                            )
-                            saved_accounts = load_connected_accounts(ACCOUNT_STORE_PATH)
-                            st.session_state["community_id"] = ""
-                            st.session_state["community_member_id"] = str(saved.get("id") or "")
-                            st.session_state["active_account_id"] = str(saved.get("id") or "")
-                            st.session_state["compare_account_ids"] = []
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(str(exc))
+                        st.warning("Browser Oura connect is disabled on this host.")
 
             bootstrap_unlocked = not public_invite_only
             if public_invite_only:
@@ -7345,27 +7321,6 @@ def main() -> None:
                             st.rerun()
                         except Exception as exc:
                             st.error(str(exc))
-
-            session_token_value = ""
-            if session_token:
-                st.caption("Using `OURA_ACCESS_TOKEN` from the environment for a private single-user session.")
-            else:
-                session_token_value = st.text_input("Private single-user access token", type="password", key=f"{key_prefix}_session_access_token").strip()
-            if session_token or session_token_value:
-                private_token = session_token or session_token_value
-                session_account = {
-                    "id": "__session__",
-                    "label": "Current session",
-                    "profile_name": "Current session",
-                    "email": "",
-                    "profile": {},
-                    "token_bundle": {"access_token": private_token, "_fetched_at": _utcnow().isoformat()},
-                    "community_id": "",
-                    "share_enabled": False,
-                    "created_at": "",
-                    "updated_at": "",
-                    "last_refreshed_at": "",
-                }
 
     def render_personal_controls(*, key_prefix: str, show_title: bool = True) -> None:
         nonlocal saved_accounts, session_account
@@ -7448,53 +7403,6 @@ def main() -> None:
                     st.warning(f"Browser Oura connect is not configured on this host yet. Missing: {', '.join(missing_items)}.")
                 else:
                     st.warning("Browser Oura connect is disabled on this host.")
-            with st.expander("Advanced fallback: add or update Oura token", expanded=current_personal_account is None and not oauth_browser_enabled):
-                personal_file = st.file_uploader("Upload oura_tokens.json", type=["json"], key=f"{key_prefix}_personal_file")
-                personal_token_input = st.text_area("Or paste token JSON / access token", height=120, key=f"{key_prefix}_personal_token_input")
-                if st.button("Save personal dashboard access", key=f"{key_prefix}_save_personal_dashboard"):
-                    raw_token_input = personal_token_input
-                    if personal_file is not None:
-                        raw_token_input = personal_file.getvalue().decode("utf-8")
-                    try:
-                        saved = upsert_connected_account(
-                            ACCOUNT_STORE_PATH,
-                            label=personal_label,
-                            token_input=raw_token_input,
-                            account_id=str((current_personal_account or {}).get("id") or "") or None,
-                            community_id=None,
-                            share_enabled=False,
-                        )
-                        saved_accounts = load_connected_accounts(ACCOUNT_STORE_PATH)
-                        st.session_state["community_id"] = ""
-                        st.session_state["community_member_id"] = str(saved.get("id") or "")
-                        st.session_state["active_account_id"] = str(saved.get("id") or "")
-                        st.session_state["compare_account_ids"] = []
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(str(exc))
-
-        with st.expander("Advanced: temporary session token", expanded=False):
-            session_token_value = ""
-            if session_token:
-                st.caption("Using `OURA_ACCESS_TOKEN` from the environment for a private single-user session.")
-            else:
-                session_token_value = st.text_input("Private single-user access token", type="password", key=f"{key_prefix}_session_access_token").strip()
-            if session_token or session_token_value:
-                private_token = session_token or session_token_value
-                session_account = {
-                    "id": "__session__",
-                    "label": "Current session",
-                    "profile_name": "Current session",
-                    "email": "",
-                    "profile": {},
-                    "token_bundle": {"access_token": private_token, "_fetched_at": _utcnow().isoformat()},
-                    "community_id": "",
-                    "share_enabled": False,
-                    "created_at": "",
-                    "updated_at": "",
-                    "last_refreshed_at": "",
-                }
-
     def render_auto_refresh_control(*, key_prefix: str) -> None:
         refresh_options = {"Off": 0, "Every 3 min": 3, "Every 6 min": 6}
         current_refresh = int(_safe_float(st.session_state.get("auto_refresh_minutes")) or 6)
