@@ -406,6 +406,23 @@ def current_app_url() -> str:
     return f"{proto}://{host}"
 
 
+def _looks_like_placeholder_oauth_value(value: str) -> bool:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return False
+    markers = (
+        "paste_the_",
+        "paste-",
+        "your_",
+        "your-",
+        "replace_",
+        "replace-",
+        "client_id_from_that_oura_app",
+        "client_secret_from_that_oura_app",
+    )
+    return any(marker in normalized for marker in markers)
+
+
 def oura_oauth_config() -> Dict[str, Any]:
     client_id = str(os.environ.get("OURA_CLIENT_ID") or "").strip()
     client_secret = str(os.environ.get("OURA_CLIENT_SECRET") or "").strip()
@@ -416,8 +433,12 @@ def oura_oauth_config() -> Dict[str, Any]:
     redirect_uri = configured_redirect_uri if include_redirect_uri else ""
     scopes = str(os.environ.get("OURA_OAUTH_SCOPES") or DEFAULT_OAUTH_SCOPES).strip() or DEFAULT_OAUTH_SCOPES
     missing: List[str] = []
+    if client_id and _looks_like_placeholder_oauth_value(client_id):
+        client_id = ""
     if not client_id:
         missing.append("OURA_CLIENT_ID")
+    if client_secret and _looks_like_placeholder_oauth_value(client_secret):
+        client_secret = ""
     if not client_secret:
         missing.append("OURA_CLIENT_SECRET")
     return {
@@ -7392,8 +7413,26 @@ def main() -> None:
                 st.divider()
 
             personal_label_default = str((current_personal_account or {}).get("label") or "")
-            personal_label = st.text_input("Your name", value=personal_label_default, key=f"{key_prefix}_personal_label")
+            auto_connect_key = f"{key_prefix}_auto_connect_personal_oauth"
+
+            def _queue_personal_oauth_auto_connect() -> None:
+                st.session_state[auto_connect_key] = True
+
+            personal_label = st.text_input(
+                "Your name",
+                value=personal_label_default,
+                key=f"{key_prefix}_personal_label",
+                on_change=_queue_personal_oauth_auto_connect if oauth_browser_enabled and current_personal_account is None else None,
+            )
             if oauth_browser_enabled:
+                if current_personal_account is None and st.session_state.pop(auto_connect_key, False):
+                    begin_oura_oauth_flow(
+                        action="connect_personal",
+                        payload={
+                            "label": personal_label,
+                            "account_id": "",
+                        },
+                    )
                 st.caption("Authorize Oura in the browser to load the full personal dashboard.")
                 personal_oauth_url = prepare_oura_oauth_link(
                     action="connect_personal",
