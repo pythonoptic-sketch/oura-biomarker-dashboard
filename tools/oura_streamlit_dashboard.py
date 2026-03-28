@@ -46,6 +46,7 @@ import plotly.graph_objects as go
 import plotly.io as pio
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from dateutil import parser as dtparse
 
 try:
@@ -638,10 +639,26 @@ def clear_oura_oauth_query_params() -> None:
 
 
 def redirect_browser(url: str) -> None:
-    safe_url = html.escape(str(url), quote=True)
-    st.markdown(f'<meta http-equiv="refresh" content="0;url={safe_url}">', unsafe_allow_html=True)
-    st.info("Redirecting to Oura…")
-    st.link_button("Open Oura manually", url)
+    target_url = str(url or "").strip()
+    components.html(
+        f"""
+        <script>
+        const targetUrl = {json.dumps(target_url)};
+        try {{
+          window.top.location.href = targetUrl;
+        }} catch (err) {{
+          try {{
+            window.parent.location.href = targetUrl;
+          }} catch (innerErr) {{
+            window.location.href = targetUrl;
+          }}
+        }}
+        </script>
+        """,
+        height=0,
+    )
+    st.info("Redirecting to Oura in the browser…")
+    st.link_button("Continue to Oura", target_url)
     st.stop()
 
 
