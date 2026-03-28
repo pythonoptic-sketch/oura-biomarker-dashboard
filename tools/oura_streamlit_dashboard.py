@@ -6952,6 +6952,9 @@ def main() -> None:
     configure_plotly_theme()
     restore_device_session_from_query(ACCOUNT_STORE_PATH)
     handle_oura_oauth_callback(ACCOUNT_STORE_PATH)
+    # Personal-first mode: ignore community state until that feature is reintroduced.
+    st.session_state["community_id"] = ""
+    st.session_state["compare_account_ids"] = []
     oauth_config = oura_oauth_config()
     oauth_browser_enabled = browser_oura_oauth_enabled()
     oauth_flash_message = str(st.session_state.pop("oauth_flash_message", "") or "").strip()
@@ -6990,6 +6993,13 @@ def main() -> None:
         refresh_minutes = 6 if current_member_id else 0
     st.session_state["auto_refresh_minutes"] = refresh_minutes
     maybe_enable_auto_refresh(refresh_minutes)
+
+    def personal_saved_accounts() -> List[Dict[str, Any]]:
+        return [
+            account
+            for account in saved_accounts
+            if not str(account.get("community_id") or "").strip()
+        ]
 
     def render_community_controls(*, key_prefix: str, show_title: bool = True) -> None:
         nonlocal saved_accounts, saved_communities, session_account
@@ -7281,29 +7291,135 @@ def main() -> None:
                     "last_refreshed_at": "",
                 }
 
-    def render_mobile_view_controls() -> None:
-        local_community_id = str(st.session_state.get("community_id") or "")
-        local_member_id = str(st.session_state.get("community_member_id") or "")
-        local_community = get_community_by_id(ACCOUNT_STORE_PATH, local_community_id) if local_community_id else None
-        local_saved_accounts = load_connected_accounts(ACCOUNT_STORE_PATH)
+    def render_personal_controls(*, key_prefix: str, show_title: bool = True) -> None:
+        nonlocal saved_accounts, session_account
 
-        account_options: List[Dict[str, Any]] = []
-        compare_candidates: List[Dict[str, Any]] = []
-        if local_community is not None:
-            community_accounts = accounts_for_community(ACCOUNT_STORE_PATH, str(local_community.get("id") or ""))
-            visible_accounts = [
+        if show_title:
+            st.header("Oura access")
+
+        refresh_options = {"Off": 0, "Every 3 min": 3, "Every 6 min": 6}
+        current_refresh = int(_safe_float(st.session_state.get("auto_refresh_minutes")) or 0)
+        if current_refresh not in refresh_options.values():
+            current_refresh = 0
+        refresh_labels = list(refresh_options.keys())
+        selected_refresh = next((label for label, value in refresh_options.items() if value == current_refresh), "Off")
+        refresh_label = st.selectbox(
+            "Auto-refresh",
+            options=refresh_labels,
+            index=refresh_labels.index(selected_refresh),
+            key=f"{key_prefix}_auto_refresh_personal",
+        )
+        st.session_state["auto_refresh_minutes"] = refresh_options[refresh_label]
+
+        personal_accounts = personal_saved_accounts()
+        personal_account_options = {
+            str(account.get("id") or ""): str(account.get("label") or account.get("profile_name") or "You")
+            for account in personal_accounts
+        }
+        current_personal_account = next(
+            (
                 account
-                for account in community_accounts
-                if _coerce_bool(account.get("share_enabled")) or str(account.get("id")) == local_member_id
-            ]
-            account_options = visible_accounts
-            compare_candidates = [account for account in visible_accounts if _coerce_bool(account.get("share_enabled"))]
-        else:
-            if session_account is not None:
-                account_options.append(session_account)
-            if not public_invite_only:
-                account_options.extend(local_saved_accounts)
-                compare_candidates = list(local_saved_accounts)
+                for account in personal_accounts
+                if str(account.get("id") or "") == str(st.session_state.get("active_account_id") or st.session_state.get("community_member_id") or "")
+            ),
+            None,
+        )
+        if current_personal_account is None and personal_accounts:
+            current_personal_account = personal_accounts[0]
+
+        with st.expander("Personal dashboard", expanded=current_personal_account is None):
+            if current_personal_account is not None:
+                st.caption(f"Connected as **{current_personal_account.get('label') or current_personal_account.get('profile_name') or 'You'}**")
+                selected_personal_id = st.selectbox(
+                    "Saved personal profile",
+                    options=list(personal_account_options.keys()),
+                    index=list(personal_account_options.keys()).index(str(current_personal_account.get("id") or "")),
+                    format_func=lambda account_id: personal_account_options.get(str(account_id), str(account_id)),
+                    key=f"{key_prefix}_personal_account_id",
+                )
+                if str(selected_personal_id) != str(current_personal_account.get("id") or ""):
+                    current_personal_account = next(
+                        (account for account in personal_accounts if str(account.get("id") or "") == str(selected_personal_id)),
+                        current_personal_account,
+                    )
+                if st.button("Open personal dashboard", key=f"{key_prefix}_open_personal_dashboard"):
+                    st.session_state["community_id"] = ""
+                    st.session_state["community_member_id"] = str(current_personal_account.get("id") or "")
+                    st.session_state["active_account_id"] = str(current_personal_account.get("id") or "")
+                    st.session_state["compare_account_ids"] = []
+                    st.rerun()
+                st.divider()
+
+            personal_label_default = str((current_personal_account or {}).get("label") or "")
+            personal_label = st.text_input("Your name", value=personal_label_default, key=f"{key_prefix}_personal_label")
+            if oauth_browser_enabled:
+                st.caption("Authorize Oura in the browser to load the full personal dashboard.")
+                if st.button("Connect Oura", key=f"{key_prefix}_personal_oauth_button"):
+                    begin_oura_oauth_flow(
+                        action="connect_personal",
+                        payload={
+                            "label": personal_label,
+                            "account_id": str((current_personal_account or {}).get("id") or ""),
+                        },
+                    )
+            else:
+                missing_items = [str(item) for item in oauth_config.get("missing", []) if str(item).strip()]
+                if missing_items:
+                    st.warning(f"Browser Oura connect is not configured on this host yet. Missing: {', '.join(missing_items)}.")
+                else:
+                    st.warning("Browser Oura connect is disabled on this host.")
+            with st.expander("Advanced fallback: add or update Oura token", expanded=current_personal_account is None and not oauth_browser_enabled):
+                personal_file = st.file_uploader("Upload oura_tokens.json", type=["json"], key=f"{key_prefix}_personal_file")
+                personal_token_input = st.text_area("Or paste token JSON / access token", height=120, key=f"{key_prefix}_personal_token_input")
+                if st.button("Save personal dashboard access", key=f"{key_prefix}_save_personal_dashboard"):
+                    raw_token_input = personal_token_input
+                    if personal_file is not None:
+                        raw_token_input = personal_file.getvalue().decode("utf-8")
+                    try:
+                        saved = upsert_connected_account(
+                            ACCOUNT_STORE_PATH,
+                            label=personal_label,
+                            token_input=raw_token_input,
+                            account_id=str((current_personal_account or {}).get("id") or "") or None,
+                            community_id=None,
+                            share_enabled=False,
+                        )
+                        saved_accounts = load_connected_accounts(ACCOUNT_STORE_PATH)
+                        st.session_state["community_id"] = ""
+                        st.session_state["community_member_id"] = str(saved.get("id") or "")
+                        st.session_state["active_account_id"] = str(saved.get("id") or "")
+                        st.session_state["compare_account_ids"] = []
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
+
+        with st.expander("Advanced: temporary session token", expanded=False):
+            session_token_value = ""
+            if session_token:
+                st.caption("Using `OURA_ACCESS_TOKEN` from the environment for a private single-user session.")
+            else:
+                session_token_value = st.text_input("Private single-user access token", type="password", key=f"{key_prefix}_session_access_token").strip()
+            if session_token or session_token_value:
+                private_token = session_token or session_token_value
+                session_account = {
+                    "id": "__session__",
+                    "label": "Current session",
+                    "profile_name": "Current session",
+                    "email": "",
+                    "profile": {},
+                    "token_bundle": {"access_token": private_token, "_fetched_at": _utcnow().isoformat()},
+                    "community_id": "",
+                    "share_enabled": False,
+                    "created_at": "",
+                    "updated_at": "",
+                    "last_refreshed_at": "",
+                }
+
+    def render_mobile_view_controls() -> None:
+        account_options: List[Dict[str, Any]] = []
+        if session_account is not None:
+            account_options.append(session_account)
+        account_options.extend(personal_saved_accounts())
 
         if account_options:
             account_labels = {
@@ -7322,26 +7438,7 @@ def main() -> None:
                 key="mobile_active_account_id",
             )
             st.session_state["active_account_id"] = active_mobile
-            compare_candidates = [account for account in compare_candidates if str(account.get("id") or "") != str(active_mobile)]
-            compare_ids = [str(account["id"]) for account in compare_candidates]
-            compare_default = [
-                account_id
-                for account_id in list(st.session_state.get("compare_account_ids") or [])
-                if account_id in compare_ids
-            ]
-            if not compare_default and local_community is not None:
-                compare_default = compare_ids[:3]
-            compare_mobile = st.multiselect(
-                "Compare against",
-                options=compare_ids,
-                default=compare_default,
-                format_func=lambda account_id: next(
-                    (str(account.get("label") or "Friend") for account in compare_candidates if str(account.get("id") or "") == str(account_id)),
-                    str(account_id),
-                ),
-                key="mobile_compare_account_ids",
-            )
-            st.session_state["compare_account_ids"] = list(compare_mobile)
+        st.session_state["compare_account_ids"] = []
 
         goal_options = [
             "Performance (endurance)",
@@ -7410,49 +7507,28 @@ def main() -> None:
     toolbar_left, toolbar_right = st.columns([12, 1])
     with toolbar_right:
         with st.popover("⚙️", use_container_width=True):
-            render_community_controls(key_prefix="mobile", show_title=False)
+            render_personal_controls(key_prefix="mobile", show_title=False)
             st.divider()
             render_mobile_view_controls()
 
     render_brand_hero()
 
     with st.sidebar:
-        render_community_controls(key_prefix="sidebar", show_title=True)
+        render_personal_controls(key_prefix="sidebar", show_title=True)
 
-    current_community_id = str(st.session_state.get("community_id") or "")
+    current_community_id = ""
     current_member_id = str(st.session_state.get("community_member_id") or "")
-    current_community = get_community_by_id(ACCOUNT_STORE_PATH, current_community_id) if current_community_id else None
+    current_community = None
 
     with st.sidebar:
         account_options: List[Dict[str, Any]] = []
-        compare_candidates: List[Dict[str, Any]] = []
-        if current_community is not None:
-            community_accounts = accounts_for_community(ACCOUNT_STORE_PATH, str(current_community.get("id") or ""))
-            visible_community_accounts = [
-                account
-                for account in community_accounts
-                if _coerce_bool(account.get("share_enabled")) or str(account.get("id")) == current_member_id
-            ]
-            account_options = visible_community_accounts
-            compare_candidates = [
-                account
-                for account in visible_community_accounts
-                if _coerce_bool(account.get("share_enabled")) and str(account.get("id")) != str(active_account_id or "")
-            ]
-        else:
-            if session_account is not None:
-                account_options.append(session_account)
-            personal_saved_accounts = [
-                account
-                for account in saved_accounts
-                if not str(account.get("community_id") or "").strip()
-            ]
-            account_options.extend(personal_saved_accounts)
-            compare_candidates = [account for account in personal_saved_accounts if str(account.get("id")) != str(active_account_id or "")]
+        if session_account is not None:
+            account_options.append(session_account)
+        account_options.extend(personal_saved_accounts())
 
         account_labels = {str(account["id"]): str(account.get("label") or account.get("profile_name") or "Friend") for account in account_options}
         if account_options:
-            default_active_id = current_member_id if current_community is not None and current_member_id else str(account_options[0].get("id"))
+            default_active_id = current_member_id or str(account_options[0].get("id"))
             active_account_id = st.selectbox(
                 "Dashboard account",
                 options=[str(account["id"]) for account in account_options],
@@ -7460,28 +7536,12 @@ def main() -> None:
                 format_func=lambda account_id: account_labels.get(str(account_id), str(account_id)),
                 key="active_account_id",
             )
-            compare_candidates = [
-                account
-                for account in compare_candidates
-                if str(account.get("id")) != str(active_account_id)
-            ]
-            compare_account_ids = st.multiselect(
-                "Compare against",
-                options=[str(account["id"]) for account in compare_candidates],
-                default=[str(account.get("id")) for account in compare_candidates[:3]] if current_community is not None else None,
-                format_func=lambda account_id: next((str(account.get("label") or "Friend") for account in compare_candidates if str(account.get("id")) == str(account_id)), str(account_id)),
-                key="compare_account_ids",
-            )
+            compare_account_ids = []
         else:
-            if public_invite_only:
-                st.info("Enter a personal invitation code to join, or use the owner bootstrap code to create the first community.")
-            else:
-                st.warning("Create or join a community, or use a private session token, to continue.")
+            st.warning("Connect your Oura account or use a temporary access token to continue.")
             st.stop()
 
         st.caption(f"Account store: `{pathlib.Path(ACCOUNT_STORE_PATH).expanduser()}`")
-        if current_community is not None:
-            st.caption("For web access from anywhere, deploy this Streamlit app on a host with a persistent disk so the community account store survives restarts.")
         st.divider()
         st.header("Goal")
         goal = st.selectbox(
@@ -7516,24 +7576,16 @@ def main() -> None:
         show_raw = st.checkbox("Show raw JSON samples", value=False, key="show_raw")
 
     all_saved_accounts = load_connected_accounts(ACCOUNT_STORE_PATH)
-    if current_community is not None:
-        saved_accounts = accounts_for_community(ACCOUNT_STORE_PATH, str(current_community.get("id") or ""))
-        visible_saved_accounts = [
-            account
-            for account in saved_accounts
-            if _coerce_bool(account.get("share_enabled")) or str(account.get("id")) == current_member_id
-        ]
-    else:
-        saved_accounts = all_saved_accounts
-        visible_saved_accounts = [
-            account
-            for account in saved_accounts
-            if not str(account.get("community_id") or "").strip()
-        ]
+    saved_accounts = all_saved_accounts
+    visible_saved_accounts = [
+        account
+        for account in saved_accounts
+        if not str(account.get("community_id") or "").strip()
+    ]
 
-    account_options = ([session_account] if session_account is not None and current_community is None else []) + visible_saved_accounts
+    account_options = ([session_account] if session_account is not None else []) + visible_saved_accounts
     if not account_options:
-        st.error("Missing Oura account connection. Create or join a community in the sidebar, or use a private session token.")
+        st.error("Missing Oura account connection. Connect your Oura account in the sidebar, or use a temporary access token.")
         st.stop()
 
     account_refresh_warnings: List[str] = []
@@ -7554,16 +7606,12 @@ def main() -> None:
                 updated_account if str(existing.get("id")) == str(updated_account.get("id")) else existing
                 for existing in all_saved_accounts
             ]
-            if current_community is not None:
-                saved_accounts = accounts_for_community(ACCOUNT_STORE_PATH, str(current_community.get("id") or ""))
-                visible_saved_accounts = [
-                    existing
-                    for existing in saved_accounts
-                    if _coerce_bool(existing.get("share_enabled")) or str(existing.get("id")) == current_member_id
-                ]
-            else:
-                saved_accounts = all_saved_accounts
-                visible_saved_accounts = saved_accounts
+            saved_accounts = all_saved_accounts
+            visible_saved_accounts = [
+                existing
+                for existing in saved_accounts
+                if not str(existing.get("community_id") or "").strip()
+            ]
             registry_changed = True
         return token_value, updated_account
 
@@ -7573,18 +7621,7 @@ def main() -> None:
     current_device_session_token = str(st.session_state.get("device_session_token") or "").strip()
     if _coerce_bool(active_account.get("pending_connection")):
         active_account_id_value = str(active_account.get("id") or "")
-        if current_community is not None and current_member_id:
-            session_record = persist_device_session(
-                community_id=str(current_community.get("id") or ""),
-                member_id=current_member_id,
-                active_account_id=str(active_account_id or active_account_id_value or current_member_id),
-                compare_account_ids=list(compare_account_ids or []),
-                refresh_minutes=int(st.session_state.get("auto_refresh_minutes") or 6),
-                token=current_device_session_token or None,
-            )
-            st.session_state["device_session_token"] = str(session_record.get("token") or "")
-            sync_device_session_query_param(str(session_record.get("token") or ""))
-        st.info("Community access is saved on this device. Add your Oura token in Community -> Reconnect or update my Oura account when you want biomarker data to load.")
+        st.info("This dashboard profile exists, but its Oura connection is still incomplete. Reconnect Oura in the Personal dashboard panel when you want biomarker data to load.")
         st.stop()
     try:
         active_token, active_account = resolve_account_for_use(active_account)
@@ -7592,7 +7629,7 @@ def main() -> None:
         st.error(f"Could not use the selected account: {exc}")
         st.stop()
     active_account_id_value = str(active_account.get("id") or "")
-    can_edit_active_account = current_community is None or active_account_id_value in {"__session__", current_member_id}
+    can_edit_active_account = True
     behavior_event_path = behavior_event_path_for_account(active_account_id_value)
     workout_intent_path = workout_intent_path_for_account(active_account_id_value)
 
@@ -7610,18 +7647,7 @@ def main() -> None:
         except Exception as exc:
             account_refresh_warnings.append(f"{account.get('label')}: {exc}")
 
-    if current_community is not None and current_member_id:
-        session_record = persist_device_session(
-            community_id=str(current_community.get("id") or ""),
-            member_id=current_member_id,
-            active_account_id=str(active_account_id or active_account_id_value or current_member_id),
-            compare_account_ids=list(compare_account_ids or []),
-            refresh_minutes=int(st.session_state.get("auto_refresh_minutes") or 6),
-            token=current_device_session_token or None,
-        )
-        st.session_state["device_session_token"] = str(session_record.get("token") or "")
-        sync_device_session_query_param(str(session_record.get("token") or ""))
-    elif active_account_id_value and active_account_id_value != "__session__":
+    if active_account_id_value and active_account_id_value != "__session__":
         session_record = persist_device_session(
             community_id="",
             member_id=active_account_id_value,
@@ -7900,11 +7926,7 @@ def main() -> None:
                     )
 
     viewing_bits = [f"Viewing account: **{active_account.get('label') or 'Current session'}**"]
-    if current_community is not None:
-        viewing_bits.append(f"Community: **{current_community.get('name') or 'Private group'}**")
     st.caption(" | ".join(viewing_bits))
-    if current_community is not None and not can_edit_active_account:
-        st.caption("Shared dashboards are read-only. Only the account owner can save experiment logs or workout labels.")
     for warning in account_refresh_warnings[:3]:
         st.warning(warning)
 
@@ -7912,7 +7934,6 @@ def main() -> None:
     tabs = st.tabs([
         "Today",
         "Biomarkers",
-        "Community",
         "Training",
         "Experiments",
         "Legacy: Recovery trends",
@@ -8152,19 +8173,9 @@ def main() -> None:
         render_longevity_score_panel(decision_score, compact=False)
 
     # ------------------
-    # Community
-    # ------------------
-    with guarded_tab(tabs[2], "Community"):
-        render_peer_comparison_tab(
-            active_label=str(active_account.get("label") or "Current session"),
-            snapshots=comparison_snapshots,
-            community_name=str((current_community or {}).get("name") or "") or None,
-        )
-
-    # ------------------
     # Timeline
     # ------------------
-    with guarded_tab(tabs[5], "Legacy: Recovery trends"):
+    with guarded_tab(tabs[4], "Legacy: Recovery trends"):
         st.subheader("Recovery trend analysis")
         st.caption("Legacy deep-dive view retained for compatibility.")
         st.caption("One metric at a time, centered on what changes your next decision.")
@@ -8413,7 +8424,7 @@ def main() -> None:
     # ------------------
     # Training
     # ------------------
-    with guarded_tab(tabs[3], "Training"):
+    with guarded_tab(tabs[2], "Training"):
         st.subheader("Training")
         st.caption("First decide what today's recovery allows. Then score how a completed session actually executed.")
 
@@ -9401,7 +9412,7 @@ def main() -> None:
     # ------------------
     # Fitness
     # ------------------
-    with guarded_tab(tabs[6], "Legacy: VO₂ / CVA"):
+    with guarded_tab(tabs[5], "Legacy: VO₂ / CVA"):
         st.subheader("VO₂ / CVA")
         st.caption("Legacy deep-dive view retained for compatibility.")
         st.caption(f"Longevity analysis uses up to {analysis_window_label} of history.")
@@ -9478,7 +9489,7 @@ def main() -> None:
     # ------------------
     # Resting HR
     # ------------------
-    with guarded_tab(tabs[7], "Legacy: Resting HR"):
+    with guarded_tab(tabs[6], "Legacy: Resting HR"):
         st.caption("Legacy deep-dive view retained for compatibility.")
         render_nightly_metric_tab(
             daily=daily,
@@ -9500,7 +9511,7 @@ def main() -> None:
     # ------------------
     # HRV
     # ------------------
-    with guarded_tab(tabs[8], "Legacy: HRV"):
+    with guarded_tab(tabs[7], "Legacy: HRV"):
         st.caption("Legacy deep-dive view retained for compatibility.")
         render_nightly_metric_tab(
             daily=daily,
@@ -9521,7 +9532,7 @@ def main() -> None:
     # ------------------
     # Experiments (Tags)
     # ------------------
-    with guarded_tab(tabs[4], "Experiments"):
+    with guarded_tab(tabs[3], "Experiments"):
         st.subheader("Experiments")
         st.caption("This is the N-of-1 lab. Oura tags still work, but experiments no longer depend on them.")
         st.caption(f"Using experiment history from {analysis_window_label}.")
@@ -9670,7 +9681,7 @@ def main() -> None:
     # ------------------
     # Data Access
     # ------------------
-    with guarded_tab(tabs[9], "Data Access"):
+    with guarded_tab(tabs[8], "Data Access"):
         st.subheader("Data Access (what the API is *actually* returning)")
         st.caption(f"Experiment storage for this account: `{pathlib.Path(behavior_event_path).expanduser()}`")
         rows = []
