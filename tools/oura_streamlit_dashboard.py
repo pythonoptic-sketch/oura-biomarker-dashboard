@@ -409,15 +409,13 @@ def current_app_url() -> str:
 def oura_oauth_config() -> Dict[str, Any]:
     client_id = str(os.environ.get("OURA_CLIENT_ID") or "").strip()
     client_secret = str(os.environ.get("OURA_CLIENT_SECRET") or "").strip()
-    redirect_uri = str(os.environ.get("OURA_OAUTH_REDIRECT_URI") or "").strip() or current_app_url()
+    redirect_uri = str(os.environ.get("OURA_OAUTH_REDIRECT_URI") or "").strip()
     scopes = str(os.environ.get("OURA_OAUTH_SCOPES") or DEFAULT_OAUTH_SCOPES).strip() or DEFAULT_OAUTH_SCOPES
     missing: List[str] = []
     if not client_id:
         missing.append("OURA_CLIENT_ID")
     if not client_secret:
         missing.append("OURA_CLIENT_SECRET")
-    if not redirect_uri:
-        missing.append("OURA_OAUTH_REDIRECT_URI")
     return {
         "client_id": client_id,
         "client_secret": client_secret,
@@ -429,7 +427,8 @@ def oura_oauth_config() -> Dict[str, Any]:
 
 
 def browser_oura_oauth_enabled() -> bool:
-    return bool(oura_oauth_config().get("enabled"))
+    config = oura_oauth_config()
+    return bool(config["client_id"] and config["client_secret"])
 
 
 def _normalize_device_session_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -594,10 +593,11 @@ def build_oura_authorize_url(*, state: str) -> str:
     params = {
         "response_type": "code",
         "client_id": config["client_id"],
-        "redirect_uri": config["redirect_uri"],
         "scope": config["scopes"],
         "state": state,
     }
+    if config["redirect_uri"]:
+        params["redirect_uri"] = config["redirect_uri"]
     return f"{OAUTH_AUTHORIZE_URL}?{urlencode(params)}"
 
 
@@ -605,15 +605,17 @@ def exchange_oura_authorization_code(code: str) -> Dict[str, Any]:
     config = oura_oauth_config()
     if not config["enabled"]:
         raise ValueError(f"Oura browser connect is not configured. Missing: {', '.join(config['missing'])}")
+    token_payload = {
+        "grant_type": "authorization_code",
+        "code": str(code or "").strip(),
+        "client_id": config["client_id"],
+        "client_secret": config["client_secret"],
+    }
+    if config["redirect_uri"]:
+        token_payload["redirect_uri"] = config["redirect_uri"]
     response = requests.post(
         OAUTH_TOKEN_URL,
-        data={
-            "grant_type": "authorization_code",
-            "code": str(code or "").strip(),
-            "redirect_uri": config["redirect_uri"],
-            "client_id": config["client_id"],
-            "client_secret": config["client_secret"],
-        },
+        data=token_payload,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         timeout=40,
     )
