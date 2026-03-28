@@ -9,6 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import requests
 import streamlit as st
 
 
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parent
 TOOLS_DIR = ROOT / "tools"
 CHUNK_FILES = [TOOLS_DIR / f"oura_streamlit_dashboard.py.gz.b64.part0{i}" for i in range(4)]
 DECODED_APP_PATH = Path(tempfile.gettempdir()) / "oura_streamlit_dashboard_streamlit_cloud.py"
+REMOTE_CHUNK_BASE = "https://raw.githubusercontent.com/pythonoptic-sketch/oura-biomarker-dashboard/main/tools"
 SECRET_KEYS = (
     "OURA_BOOTSTRAP_CODE",
     "OURA_CLIENT_ID",
@@ -34,8 +36,18 @@ def apply_streamlit_secrets_to_env() -> None:
 
 
 def decode_dashboard_source() -> Path:
-    encoded = b"".join(path.read_bytes() for path in CHUNK_FILES)
-    decoded = gzip.decompress(base64.b64decode(encoded))
+    try:
+        encoded = b"".join(path.read_bytes() for path in CHUNK_FILES)
+        decoded = gzip.decompress(base64.b64decode(encoded))
+    except Exception:
+        remote_chunks = []
+        for i in range(4):
+            url = f"{REMOTE_CHUNK_BASE}/oura_streamlit_dashboard.py.gz.b64.part0{i}"
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            remote_chunks.append(response.content)
+        encoded = b"".join(remote_chunks)
+        decoded = gzip.decompress(base64.b64decode(encoded))
     DECODED_APP_PATH.write_bytes(decoded)
     return DECODED_APP_PATH
 
