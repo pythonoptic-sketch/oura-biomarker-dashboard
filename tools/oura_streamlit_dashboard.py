@@ -7542,7 +7542,11 @@ def main() -> None:
             )
             compare_account_ids = []
         else:
-            st.warning("Connect your Oura account or use a temporary access token to continue.")
+            missing_items = [str(item) for item in oauth_config.get("missing", []) if str(item).strip()]
+            if missing_items:
+                st.warning(f"Oura browser connect is unavailable until Streamlit Secrets include: {', '.join(missing_items)}.")
+            else:
+                st.warning("Connect your Oura account to continue.")
             st.stop()
 
         st.caption(f"Account store: `{pathlib.Path(ACCOUNT_STORE_PATH).expanduser()}`")
@@ -7592,7 +7596,11 @@ def main() -> None:
 
     account_options = ([session_account] if session_account is not None else []) + visible_saved_accounts
     if not account_options:
-        st.error("Missing Oura account connection. Connect your Oura account in the sidebar, or use a temporary access token.")
+        missing_items = [str(item) for item in oauth_config.get("missing", []) if str(item).strip()]
+        if missing_items:
+            st.error(f"Missing Oura account connection. Streamlit Secrets still need: {', '.join(missing_items)}.")
+        else:
+            st.error("Missing Oura account connection. Connect your Oura account in the sidebar.")
         st.stop()
 
     account_refresh_warnings: List[str] = []
